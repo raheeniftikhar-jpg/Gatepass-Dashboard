@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LAAM First Mile Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#eef1f5;color:#111827;font-family:Arial,Helvetica,sans-serif}
+.app{max-width:1200px;margin:0 auto;padding:22px}
+.header{background:#101827;color:#fff;border-radius:24px;padding:28px;margin-bottom:18px}
+.header h1{margin:0;font-size:34px}
+.header p{color:#cbd5e1}
+.card{background:#fff;border-radius:20px;padding:18px;margin-bottom:16px;box-shadow:0 8px 20px rgba(15,23,42,.07)}
+.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
+button{border:0;border-radius:14px;padding:13px 16px;font-weight:800;font-size:15px;background:#111827;color:white;cursor:pointer}
+button.secondary{background:#e5e7eb;color:#111827}
+button.green{background:#15753b}
+button.red{background:#dc2626}
+.tabs button{background:#e5e7eb;color:#111827}
+.tabs button.active{background:#111827;color:white}
+.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+.stat{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:15px}
+.stat small{color:#6b7280}
+.stat strong{display:block;font-size:28px;margin-top:5px}
+input,select,textarea{width:100%;border:1px solid #cfd5df;border-radius:14px;padding:13px;font-size:15px;background:#fff}
+label{font-weight:800;display:block;margin-bottom:7px}
+.hidden{display:none!important}
+.box{border:1px solid #e5e7eb;border-radius:18px;padding:15px;margin:12px 0;background:#fafafa}
+.report.pending{border-color:#f59e0b;background:#fffbeb}
+.report.verified{border-color:#16a34a;background:#ecfdf5}
+.report.rejected{border-color:#ef4444;background:#fef2f2}
+.pill{display:inline-block;padding:5px 9px;border-radius:999px;font-weight:800;font-size:12px}
+.pill.pending{background:#fef3c7;color:#92400e}
+.pill.verified{background:#dcfce7;color:#166534}
+.pill.rejected{background:#fee2e2;color:#991b1b}
+.table{width:100%;border-collapse:collapse;margin-top:10px}
+.table th,.table td{border:1px solid #e5e7eb;padding:8px;text-align:left;vertical-align:top}
+.table th{background:#111827;color:white}
+.hint{color:#6b7280;font-size:14px}
+@media(max-width:800px){.grid,.grid2,.tabs{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <h1>LAAM First Mile Dashboard</h1>
+    <p>Live dashboard linked with the rider app. Pending, verified and rejected gatepasses appear from Supabase.</p>
+  </div>
+
+  <div class="tabs">
+    <button id="overviewTab" class="active">Overview</button>
+    <button id="verificationTab">Verification</button>
+    <button id="rejectionTab">Rejection</button>
+  </div>
+
+  <div class="card">
+    <div class="grid2">
+      <div>
+        <label>City</label>
+        <select id="cityFilter"><option>All Cities</option><option>Lahore</option><option>Karachi</option><option>Faisalabad</option><option>Gujranwala</option></select>
+      </div>
+      <div>
+        <label>Search RFP / Brand / Rider</label>
+        <input id="searchBox" placeholder="Search...">
+      </div>
+    </div>
+    <br>
+    <button id="refreshBtn">Refresh</button>
+    <div id="status" class="hint"></div>
+  </div>
+
+  <section id="overviewPanel">
+    <div class="grid">
+      <div class="stat"><small>Total Reports</small><strong id="totalReports">0</strong></div>
+      <div class="stat"><small>Total Qty</small><strong id="totalQty">0</strong></div>
+      <div class="stat"><small>Pending</small><strong id="pendingCount">0</strong></div>
+      <div class="stat"><small>Verified</small><strong id="verifiedCount">0</strong></div>
+      <div class="stat"><small>Rejected</small><strong id="rejectedCount">0</strong></div>
+    </div>
+    <div class="card">
+      <h2>City Summary</h2>
+      <div id="citySummary"></div>
+    </div>
+  </section>
+
+  <section id="verificationPanel" class="hidden">
+    <div class="card">
+      <h2>Pending Verification</h2>
+      <div id="pendingList"></div>
+    </div>
+  </section>
+
+  <section id="rejectionPanel" class="hidden">
+    <div class="card">
+      <h2>Rejected Gatepasses</h2>
+      <div id="rejectedList"></div>
+    </div>
+  </section>
+</div>
+
+<script>
+const SUPABASE_URL="https://xjskbvvgsaeqcqsebrzy.supabase.co";
+const SUPABASE_KEY="sb_publishable_OJT55WMHSwI3pu62jpOtlQ_yR8cKssa";
+const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+const $=id=>document.getElementById(id);
+const safe=v=>String(v??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
+let reports=[];
+
+function statusOf(r){return r.status || (r.verified ? "verified" : "pending")}
+function fromDb(r){
+ return {
+  id:r.id, city:r.city||"", vendor:r.vendor||"", rider:r.rider||"", zone:r.zone||"",
+  gatepassNo:r.gatepass_no||r.rfp_id||"", rfpId:r.rfp_id||r.gatepass_no||"",
+  submittedAt:r.submitted_at||"", dateKey:r.date_key||"", dateLabel:r.date_label||"",
+  items:r.items||[], totalQty:Number(r.total_qty||0), vendorSig:r.vendor_sig||"", riderSig:r.rider_sig||"",
+  verified:!!r.verified, status:r.status||(r.verified?"verified":"pending"),
+  vendorPocName:r.vendor_poc_name||"", vendorPocNumber:r.vendor_poc_number||"",
+  rejectionReason:r.rejection_reason||"", rejectedAt:r.rejected_at||"", verifiedAt:r.verified_at||"",
+  editedVersion:!!r.edited_version, originalGatepassNo:r.original_gatepass_no||""
+ }
+}
+function filtered(){
+ const c=$("cityFilter").value, q=$("searchBox").value.trim().toLowerCase();
+ return reports.filter(r=>(c==="All Cities"||r.city===c) && (!q || [r.rfpId,r.gatepassNo,r.vendor,r.rider,r.city].join(" ").toLowerCase().includes(q)));
+}
+async function load(){
+ $("status").textContent="Loading...";
+ const {data,error}=await sb.from("gatepass_reports").select("*").order("created_at",{ascending:false});
+ if(error){$("status").textContent="Supabase error: "+error.message; return;}
+ reports=(data||[]).map(fromDb);
+ $("status").textContent="Last refreshed: "+new Date().toLocaleTimeString();
+ render();
+}
+function show(panel){
+ ["overviewPanel","verificationPanel","rejectionPanel"].forEach(id=>$(id).classList.add("hidden"));
+ ["overviewTab","verificationTab","rejectionTab"].forEach(id=>$(id).classList.remove("active"));
+ $(panel+"Panel").classList.remove("hidden");
+ $(panel+"Tab").classList.add("active");
+ render();
+}
+function render(){
+ const list=filtered();
+ $("totalReports").textContent=list.length;
+ $("totalQty").textContent=list.reduce((s,r)=>s+Number(r.totalQty||0),0);
+ $("pendingCount").textContent=list.filter(r=>statusOf(r)==="pending").length;
+ $("verifiedCount").textContent=list.filter(r=>statusOf(r)==="verified").length;
+ $("rejectedCount").textContent=list.filter(r=>statusOf(r)==="rejected").length;
+ renderCitySummary(list);
+ $("pendingList").innerHTML=list.filter(r=>statusOf(r)==="pending").map(reportCard).join("")||'<div class="hint">No pending gatepasses.</div>';
+ $("rejectedList").innerHTML=list.filter(r=>statusOf(r)==="rejected").map(reportCard).join("")||'<div class="hint">No rejected gatepasses.</div>';
+}
+function renderCitySummary(list){
+ const cities=["Lahore","Karachi","Faisalabad","Gujranwala"];
+ $("citySummary").innerHTML='<div class="grid2">'+cities.map(c=>{
+   const rows=list.filter(r=>r.city===c);
+   return `<div class="box"><h3>${c}</h3><div>Reports: ${rows.length}</div><div>Total Qty: ${rows.reduce((s,r)=>s+r.totalQty,0)}</div><div>Pending: ${rows.filter(r=>statusOf(r)==="pending").length} · Verified: ${rows.filter(r=>statusOf(r)==="verified").length} · Rejected: ${rows.filter(r=>statusOf(r)==="rejected").length}</div></div>`;
+ }).join("")+'</div>';
+}
+function reportCard(r){
+ const st=statusOf(r);
+ const rows=(r.items||[]).map((it,i)=>`<tr><td>${safe(it.serial||i+1)}</td><td>${safe(it.article||it.detail||"")}</td><td>${safe(it.sku||"-")}</td><td>${safe(it.qty||0)}</td></tr>`).join("");
+ return `<div class="box report ${st}">
+  <h3>${safe(r.city)} · RFP ${safe(r.rfpId)}</h3>
+  <span class="pill ${st}">${safe(st)}</span>
+  ${r.editedVersion?'<span class="pill verified">Edited Version</span>':""}
+  <p><b>Brand:</b> ${safe(r.vendor)} · <b>Rider:</b> ${safe(r.rider)} · <b>Zone:</b> ${safe(r.zone)}</p>
+  <p><b>Vendor POC:</b> ${safe(r.vendorPocName)} / ${safe(r.vendorPocNumber)} · <b>Total Qty:</b> ${safe(r.totalQty)}</p>
+  ${r.rejectionReason?`<p><b>Rejection Reason:</b> ${safe(r.rejectionReason)}</p>`:""}
+  <table class="table"><thead><tr><th>SR</th><th>Article / Description</th><th>SKU</th><th>Qty</th></tr></thead><tbody>${rows}</tbody></table>
+  <br>
+  <div class="grid2">
+    <button onclick="downloadPdf('${r.id}')">View / Download PDF</button>
+    ${st==="pending"?`<button class="green" onclick="verifyReport('${r.id}')">Verify</button>`:""}
+  </div>
+  ${st==="pending"?`<br><textarea id="reject_${r.id}" placeholder="Rejection reason"></textarea><br><button class="red" onclick="rejectReport('${r.id}')">Reject</button>`:""}
+ </div>`;
+}
+async function verifyReport(id){
+ const {error}=await sb.from("gatepass_reports").update({status:"verified",verified:true,verified_at:new Date().toLocaleString("en-PK"),verified_by:"Dashboard"}).eq("id",id);
+ if(error) return alert("Verify failed: "+error.message);
+ await load();
+}
+async function rejectReport(id){
+ const reason=$("reject_"+id)?.value.trim();
+ if(!reason) return alert("Enter rejection reason.");
+ const {error}=await sb.from("gatepass_reports").update({status:"rejected",verified:false,rejected_at:new Date().toLocaleString("en-PK"),rejected_by:"Dashboard",rejection_reason:reason}).eq("id",id);
+ if(error) return alert("Reject failed: "+error.message);
+ await load();
+}
+function downloadPdf(id){
+ const r=reports.find(x=>x.id===id); if(!r)return;
+ const {jsPDF}=window.jspdf; const doc=new jsPDF(); let y=14;
+ doc.setFontSize(16); doc.text("LAAM First Mile Gatepass",105,y,{align:"center"}); y+=10;
+ ["Gatepass / RFP ID: "+r.rfpId,"Date: "+r.dateLabel,"City: "+r.city,"Brand: "+r.vendor,"Picker/Rider: "+r.rider,"Zone: "+r.zone,"Vendor POC: "+r.vendorPocName+" / "+r.vendorPocNumber,"Status: "+statusOf(r),"Total Qty: "+r.totalQty].forEach(t=>{doc.setFontSize(10);doc.text(t,14,y);y+=6;});
+ y+=5; doc.setFont(undefined,"bold"); doc.text("SR",14,y); doc.text("Article/Description",26,y); doc.text("SKU",120,y); doc.text("Qty",180,y); doc.setFont(undefined,"normal"); y+=6;
+ (r.items||[]).forEach((it,i)=>{if(y>270){doc.addPage();y=14};doc.text(String(it.serial||i+1),14,y);doc.text(String(it.article||it.detail||"").slice(0,45),26,y);doc.text(String(it.sku||"-").slice(0,25),120,y);doc.text(String(it.qty||0),180,y);y+=7;});
+ if(y>220){doc.addPage();y=14} y+=10; doc.text("Vendor Signature",14,y);doc.text("Rider Signature",110,y);y+=5;
+ if(r.vendorSig)doc.addImage(r.vendorSig,"PNG",14,y,75,28); if(r.riderSig)doc.addImage(r.riderSig,"PNG",110,y,75,28);
+ doc.save("Gatepass-"+r.rfpId+".pdf");
+}
+$("overviewTab").onclick=()=>show("overview");
+$("verificationTab").onclick=()=>show("verification");
+$("rejectionTab").onclick=()=>show("rejection");
+$("refreshBtn").onclick=load;
+$("cityFilter").onchange=render;
+$("searchBox").oninput=render;
+load();
+</script>
+</body>
+</html>
